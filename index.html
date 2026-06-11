@@ -180,15 +180,10 @@
 
 <main class="content" id="mainContent">
   <div id="dashboardWidgets">
-    <div class="empty-state" id="emptyState">
-      <div class="icon">🎼</div>
-      <h2>เลือกเพลงเพื่อเริ่มเรียน</h2>
-      <p>ค้นหาเพลงภาษาญี่ปุ่นด้านบน<br>ระบบจะแปลและวิเคราะห์คำศัพท์ทุกระดับ N5–N1 ให้อัตโนมัติ</p>
-    </div>
-    <div id="apikeySection"></div>
-    <div id="nicknameSection"></div>
     <div id="pinnedSection"></div>
     <div id="recentSection"></div>
+    <div id="apikeySection"></div>
+    <div id="nicknameSection"></div>
   </div>
   <div id="lyricsView"></div>
 </main>
@@ -294,7 +289,6 @@ function tokenizeLine(tokenizer, line) {
 const searchInput      = document.getElementById('searchInput');
 const clearBtn         = document.getElementById('clearBtn');
 const searchResults    = document.getElementById('searchResults');
-const emptyState       = document.getElementById('emptyState');
 const apikeySection    = document.getElementById('apikeySection');
 const pinnedSection    = document.getElementById('pinnedSection');
 const recentSection    = document.getElementById('recentSection');
@@ -333,7 +327,6 @@ function resetToDashboard() {
   lyricsView.innerHTML = '';
   backBtn.style.display = 'none';
   dashboardWidgets.style.display = 'block';
-  emptyState.style.display = 'flex';
   hideSearchResults();
   searchInput.value = '';
   clearBtn.style.display = 'none';
@@ -944,6 +937,71 @@ function esc(str) {
 }
 
 init();
+
+// ─── Swipe Gesture ────────────────────────────────────────────────
+(function() {
+  let touchStartX = 0;
+  let touchStartY = 0;
+  const SWIPE_THRESHOLD = 60;  // px ขั้นต่ำถึงนับว่าปัด
+  const AXIS_LOCK = 30;        // px แกน Y ต้องน้อยกว่านี้ถึงนับแนวนอน
+
+  document.addEventListener('touchstart', e => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener('touchend', e => {
+    if (!state.currentSong) return; // ทำงานเฉพาะตอนดูเพลง
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+
+    // ต้องเป็นแนวนอนชัดเจน
+    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dy) > AXIS_LOCK) return;
+
+    if (dx > 0) {
+      // ปัดซ้าย→ขวา: กลับ home
+      resetToDashboard();
+    } else {
+      // ปัดขวา→ซ้าย: เพลงถัดไปใน recent
+      const recents = state.recentSearches;
+      if (recents.length < 2) return;
+      const currentIdx = recents.findIndex(s => s.id === state.currentSong.id);
+      const nextIdx = currentIdx + 1;
+      if (nextIdx >= recents.length) return; // ถึงท้ายแล้ว ไม่ทำอะไร
+      const next = recents[nextIdx];
+      showSwipeHint(next.title, 'next');
+      setTimeout(() => loadSong(next.id, next.title, next.artist), 300);
+    }
+  }, { passive: true });
+
+  function showSwipeHint(title, dir) {
+    const hint = document.createElement('div');
+    hint.style.cssText = `
+      position: fixed;
+      ${dir === 'next' ? 'right: 16px' : 'left: 16px'};
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(62,166,255,.15);
+      border: 1px solid rgba(62,166,255,.3);
+      color: var(--accent);
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 12px;
+      max-width: 140px;
+      text-align: center;
+      pointer-events: none;
+      z-index: 999;
+      opacity: 1;
+      transition: opacity .3s;
+      word-break: break-word;
+    `;
+    hint.textContent = dir === 'next' ? '▶ ' + title : '⌂ หน้าแรก';
+    document.body.appendChild(hint);
+    setTimeout(() => { hint.style.opacity = '0'; }, 250);
+    setTimeout(() => hint.remove(), 600);
+  }
+})();
+
 </script>
 </body>
 </html>
