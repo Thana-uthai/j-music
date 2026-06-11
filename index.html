@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>J-Music Learning App</title>
+  <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f0f0f; --bg2: #181818; --bg3: #222; --border: #2a2a2a;
+      --accent: #3ea6ff; --accent2: #ff6b6b; --text: #e8e8e8; --muted: #888;
+      --N5: #48bb78; --N4: #4299e1; --N3: #ed8936; --N2: #9f7aea; --N1: #fc8181;
+    }
+    body { background:var(--bg); color:var(--text); font-family:'Segoe UI',sans-serif; max-width:520px; margin:0 auto; padding:0 0 80px; min-height:100vh; }
+
+    /* Header */
+    .app-header { position:sticky; top:0; z-index:100; background:var(--bg); border-bottom:1px solid var(--border); padding:14px 16px 12px; }
+    .header-top-row { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+    .back-btn { background:none; border:none; color:var(--muted); font-size:15px; cursor:pointer; padding:4px 8px 4px 0; display:none; align-items:center; transition:color .15s; }
+    .back-btn:hover { color:var(--accent); }
+    .app-header h1 { font-size:15px; font-weight:600; letter-spacing:.5px; color:var(--accent); display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; }
+
+    /* Search */
+    .search-wrap { position:relative; }
+    .search-wrap input { width:100%; padding:10px 14px 10px 38px; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:24px; font-size:14px; outline:none; transition:border-color .2s; }
+    .search-wrap input:focus { border-color:var(--accent); }
+    .search-wrap .search-icon { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:15px; pointer-events:none; }
+    .search-wrap .clear-btn { position:absolute; right:12px; top:50%; transform:translateY(-50%); color:var(--muted); cursor:pointer; font-size:13px; display:none; background:none; border:none; padding:2px 4px; }
+
+    /* JLPT */
+    .jlpt-bar { display:flex; gap:6px; margin-top:10px; align-items:center; }
+    .jlpt-bar span { font-size:11px; color:var(--muted); margin-right:2px; }
+    .jlpt-toggle { font-size:11px; font-weight:600; padding:3px 8px; border-radius:12px; border:1.5px solid transparent; cursor:pointer; background:var(--bg3); transition:all .15s; }
+    .jlpt-toggle[data-lv="N5"] { color:var(--N5); border-color:var(--border); }
+    .jlpt-toggle[data-lv="N4"] { color:var(--N4); border-color:var(--border); }
+    .jlpt-toggle[data-lv="N3"] { color:var(--N3); border-color:var(--border); }
+    .jlpt-toggle[data-lv="N2"] { color:var(--N2); border-color:var(--border); }
+    .jlpt-toggle[data-lv="N1"] { color:var(--N1); border-color:var(--border); }
+    .jlpt-toggle.active { font-weight:700; }
+    .jlpt-toggle[data-lv="N5"].active { border-color:var(--N5); background:rgba(72,187,120,.12); }
+    .jlpt-toggle[data-lv="N4"].active { border-color:var(--N4); background:rgba(66,153,225,.12); }
+    .jlpt-toggle[data-lv="N3"].active { border-color:var(--N3); background:rgba(237,137,54,.12); }
+    .jlpt-toggle[data-lv="N2"].active { border-color:var(--N2); background:rgba(159,122,234,.12); }
+    .jlpt-toggle[data-lv="N1"].active { border-color:var(--N1); background:rgba(252,129,129,.12); }
+
+    /* Search mode */
+    .search-mode-bar { display:flex; gap:6px; margin-top:8px; }
+    .mode-btn { flex:1; padding:6px 0; font-size:12px; font-weight:600; border-radius:8px; border:1.5px solid var(--border); background:var(--bg3); color:var(--muted); cursor:pointer; transition:all .15s; }
+    .mode-btn.active { background:rgba(62,166,255,.12); border-color:var(--accent); color:var(--accent); }
+
+    /* Search results */
+    .search-results { background:var(--bg2); border:1px solid var(--border); border-radius:10px; margin:8px 0 0; max-height:260px; overflow-y:auto; display:none; }
+    .search-result-item { display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; border-bottom:1px solid var(--border); transition:background .15s; }
+    .search-result-item:last-child { border-bottom:none; }
+    .search-result-item:hover { background:var(--bg3); }
+    .result-icon { font-size:20px; flex-shrink:0; }
+    .result-info { flex:1; min-width:0; }
+    .result-title { font-size:14px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .result-artist { font-size:12px; color:var(--muted); margin-top:2px; }
+    .result-badge { font-size:10px; padding:2px 6px; border-radius:4px; background:rgba(62,166,255,.15); color:var(--accent); flex-shrink:0; }
+    .search-status { padding:14px; text-align:center; font-size:13px; color:var(--muted); }
+
+    /* Content */
+    .content { padding:0 16px; }
+    .empty-state { display:flex; flex-direction:column; align-items:center; padding:40px 20px 20px; text-align:center; gap:12px; }
+    .empty-state .icon { font-size:48px; opacity:.5; }
+    .empty-state h2 { font-size:16px; color:var(--muted); font-weight:400; }
+    .empty-state p { font-size:13px; color:#555; line-height:1.6; }
+
+    /* Song header */
+    .song-header { padding:16px 0 12px; border-bottom:1px solid var(--border); margin-bottom:4px; }
+    .song-title { font-size:18px; font-weight:700; }
+    .song-artist { font-size:13px; color:var(--muted); margin-top:3px; }
+    .song-meta { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .meta-chip { font-size:11px; padding:3px 8px; border-radius:12px; background:var(--bg3); color:var(--muted); border:1px solid var(--border); }
+    .meta-chip.cached { color:var(--N5); border-color:rgba(72,187,120,.3); }
+
+    /* Skeleton */
+    @keyframes shimmer { 0%{background-position:-400px 0} 100%{background-position:400px 0} }
+    .skeleton-line { border-radius:4px; background:linear-gradient(90deg,var(--bg3) 25%,#2d2d2d 50%,var(--bg3) 75%); background-size:400px 100%; animation:shimmer 1.4s infinite; }
+    .skeleton-row { padding:16px 0; border-bottom:1px solid var(--border); }
+    .sk-jp { height:20px; width:85%; margin-bottom:8px; }
+    .sk-th { height:13px; width:60%; }
+
+    /* Lyrics */
+    .skip-divider { display:flex; align-items:center; gap:8px; padding:4px 0; opacity:.4; }
+    .skip-divider::before,.skip-divider::after { content:''; flex:1; height:1px; background:var(--muted); }
+    .skip-divider span { font-size:10px; color:var(--muted); letter-spacing:.5px; white-space:nowrap; }
+    .lyric-row { padding:14px 0; border-bottom:1px solid var(--border); cursor:pointer; -webkit-tap-highlight-color:transparent; }
+    .lyric-row:active { background:rgba(255,255,255,.02); }
+    .jp-text { font-size:20px; line-height:2.2; letter-spacing:.03em; }
+    ruby rt { font-size:10px; color:var(--muted); user-select:none; }
+    .th-text { font-size:13px; color:var(--muted); margin-top:2px; line-height:1.5; }
+
+    /* JLPT colors */
+    .color-N5 { color:var(--N5); border-bottom:1px dashed var(--N5); }
+    .color-N4 { color:var(--N4); border-bottom:1px dashed var(--N4); }
+    .color-N3 { color:var(--N3); border-bottom:1px dashed var(--N3); }
+    .color-N2 { color:var(--N2); border-bottom:1px dashed var(--N2); }
+    .color-N1 { color:var(--N1); border-bottom:1px dashed var(--N1); }
+
+    /* Detail */
+    .detail { display:none; background:var(--bg2); padding:12px 14px; margin-top:10px; border-radius:8px; font-size:13px; border-left:3px solid var(--detail-color,var(--accent)); animation:slideDown .15s ease; }
+    @keyframes slideDown { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+    .detail-section { margin-bottom:10px; }
+    .detail-section:last-child { margin-bottom:0; }
+    .detail-label { font-size:10px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); margin-bottom:6px; }
+    .vocab-item { display:flex; align-items:baseline; gap:6px; margin-bottom:4px; flex-wrap:wrap; }
+    .vocab-word { font-size:16px; font-weight:600; }
+    .vocab-mean { font-size:13px; color:var(--muted); }
+    .grammar-item { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; }
+    .grammar-pattern { font-size:15px; font-weight:600; font-style:italic; }
+    .grammar-exp { font-size:13px; color:var(--muted); }
+    .lvl-badge { font-size:9px; font-weight:700; padding:2px 5px; border-radius:3px; background:var(--bg3); letter-spacing:.5px; }
+    .lvl-badge.N5 { color:var(--N5); border:1px solid rgba(72,187,120,.3); }
+    .lvl-badge.N4 { color:var(--N4); border:1px solid rgba(66,153,225,.3); }
+    .lvl-badge.N3 { color:var(--N3); border:1px solid rgba(237,137,54,.3); }
+    .lvl-badge.N2 { color:var(--N2); border:1px solid rgba(159,122,234,.3); }
+    .lvl-badge.N1 { color:var(--N1); border:1px solid rgba(252,129,129,.3); }
+
+    /* Banners */
+    .processing-banner { display:flex; align-items:center; gap:10px; padding:12px 14px; background:rgba(62,166,255,.07); border:1px solid rgba(62,166,255,.2); border-radius:8px; margin:12px 0; font-size:13px; color:var(--accent); }
+    .processing-banner .spinner { width:16px; height:16px; border:2px solid rgba(62,166,255,.2); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; flex-shrink:0; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+    .error-banner { padding:12px 14px; background:rgba(252,129,129,.07); border:1px solid rgba(252,129,129,.2); border-radius:8px; margin:12px 0; font-size:13px; color:var(--N1); }
+
+    /* API Key / Nickname */
+    .apikey-section { padding:16px; background:var(--bg2); border:1px solid var(--border); border-radius:10px; margin:16px 0; }
+    .apikey-section h3 { font-size:14px; margin-bottom:4px; }
+    .apikey-section p { font-size:12px; color:var(--muted); margin-bottom:10px; line-height:1.5; }
+    .apikey-row { display:flex; gap:8px; }
+    .apikey-row input { flex:1; padding:9px 12px; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:8px; font-size:13px; font-family:monospace; outline:none; }
+    .apikey-row input:focus { border-color:var(--accent); }
+    .btn { padding:9px 14px; background:var(--accent); color:#000; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; transition:opacity .15s; white-space:nowrap; }
+    .btn:hover { opacity:.85; }
+    .btn.secondary { background:var(--bg3); color:var(--text); border:1px solid var(--border); }
+
+    /* Pinned & Recent */
+    .pinned-section,.recent-section { margin-top:8px; }
+    .section-label { font-size:11px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); padding:12px 0 8px; }
+    .pinned-item,.recent-item { display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--border); cursor:pointer; }
+    .pinned-icon,.recent-icon { font-size:22px; flex-shrink:0; }
+    .pinned-info,.recent-info { flex:1; min-width:0; }
+    .pinned-title,.recent-title { font-size:14px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pinned-artist,.recent-artist { font-size:12px; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pin-btn,.history-del-btn { background:none; border:none; cursor:pointer; font-size:16px; padding:4px; opacity:.5; transition:opacity .15s; }
+    .pin-btn:hover,.pin-btn.pinned,.history-del-btn:hover { opacity:1; }
+    .history-del-btn { color:var(--muted); font-size:13px; }
+    .history-del-btn:hover { color:var(--accent2); }
+  </style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-top-row">
+    <button id="backBtn" class="back-btn" title="กลับหน้าแรก">⬅️ กลับ</button>
+    <h1 id="appLogo">🎵 J-Music Learning</h1>
+  </div>
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input type="text" id="searchInput" placeholder="ค้นหาเพลงหรือศิลปิน..." autocomplete="off" spellcheck="false">
+    <button class="clear-btn" id="clearBtn" title="ล้าง">✕</button>
+  </div>
+  <div class="search-mode-bar">
+    <button class="mode-btn active" id="modeTrack" onclick="setSearchMode('track')">🎵 เพลง</button>
+    <button class="mode-btn" id="modeArtist" onclick="setSearchMode('artist')">🎤 ศิลปิน</button>
+  </div>
+  <div class="jlpt-bar">
+    <span>กรองระดับ:</span>
+    <button class="jlpt-toggle active" data-lv="N5">N5</button>
+    <button class="jlpt-toggle active" data-lv="N4">N4</button>
+    <button class="jlpt-toggle active" data-lv="N3">N3</button>
+    <button class="jlpt-toggle active" data-lv="N2">N2</button>
+    <button class="jlpt-toggle active" data-lv="N1">N1</button>
+  </div>
+  <div class="search-results" id="searchResults"></div>
+</header>
+
+<main class="content" id="mainContent">
+  <div id="dashboardWidgets">
+    <div class="empty-state" id="emptyState">
+      <div class="icon">🎼</div>
+      <h2>เลือกเพลงเพื่อเริ่มเรียน</h2>
+      <p>ค้นหาเพลงภาษาญี่ปุ่นด้านบน<br>ระบบจะแปลและวิเคราะห์คำศัพท์ทุกระดับ N5–N1 ให้อัตโนมัติ</p>
+    </div>
+    <div id="apikeySection"></div>
+    <div id="nicknameSection"></div>
+    <div id="pinnedSection"></div>
+    <div id="recentSection"></div>
+  </div>
+  <div id="lyricsView"></div>
+</main>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────
+const state = {
+  apiKey: localStorage.getItem('claude_api_key') || '',
+  jlptLevels: JSON.parse(localStorage.getItem('jlpt_levels') || '["N5","N4","N3","N2","N1"]'),
+  pinned: JSON.parse(localStorage.getItem('pinned_songs') || '[]'),
+  recentSearches: JSON.parse(localStorage.getItem('recent_searches') || '[]'),
+  cache: JSON.parse(localStorage.getItem('lyrics_cache') || '{}'),
+  searchTimer: null,
+  currentSong: null,
+  searchMode: 'track',
+  currentSkips: new Set(),
+  lastTokenUsage: null,
+  nickname: localStorage.getItem('user_nickname') || '',
+  tokenizer: null
+};
+
+// ─── Supabase ─────────────────────────────────────────────────────
+const SUPA_URL = 'https://vtxcggltkcuygemdcrye.supabase.co';
+const SUPA_KEY = 'sb_publishable_C9gkvHk8iVK05SQ672EsDQ_-0RSH4mq';
+const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+async function supaGetCache(songId) {
+  try {
+    const { data, error } = await supa.from('lyrics_cache').select('data').eq('song_id', songId).maybeSingle();
+    if (error) throw error;
+    return data?.data || null;
+  } catch(e) { console.warn('supaGetCache:', e.message); return null; }
+}
+async function supaSetCache(songId, analyzed) {
+  try { await supa.from('lyrics_cache').upsert({ song_id: songId, data: analyzed }, { onConflict: 'song_id' }); } catch(e) { console.warn('supaSetCache:', e.message); }
+}
+async function supaGetPinned(nickname) {
+  try {
+    const { data } = await supa.from('pinned_songs').select('*').eq('user_nickname', nickname).order('created_at', { ascending: false });
+    return data || [];
+  } catch(e) { return []; }
+}
+async function supaPin(nickname, song) {
+  try { await supa.from('pinned_songs').upsert({ user_nickname: nickname, song_id: song.id, title: song.title, artist: song.artist }, { onConflict: 'user_nickname,song_id' }); } catch(e){}
+}
+async function supaUnpin(nickname, songId) {
+  try { await supa.from('pinned_songs').delete().eq('user_nickname', nickname).eq('song_id', songId); } catch(e){}
+}
+async function supaGetRecent(nickname) {
+  try {
+    const { data } = await supa.from('recent_searches').select('*').eq('user_nickname', nickname).order('created_at', { ascending: false });
+    return data || [];
+  } catch(e) { return []; }
+}
+async function supaAddRecent(nickname, song) {
+  try {
+    await supa.from('recent_searches').upsert({
+      user_nickname: nickname, song_id: song.id, title: song.title, artist: song.artist,
+      created_at: new Date().toISOString()
+    }, { onConflict: 'user_nickname,song_id' });
+  } catch(e){}
+}
+async function supaDeleteRecent(nickname, songId) {
+  try { await supa.from('recent_searches').delete().eq('user_nickname', nickname).eq('song_id', songId); } catch(e){}
+}
+async function supaSyncRecentBatch(nickname, songs) {
+  if (!songs.length) return;
+  try {
+    await supa.from('recent_searches').upsert(
+      songs.map(s => ({ user_nickname: nickname, song_id: s.id, title: s.title, artist: s.artist, created_at: new Date().toISOString() })),
+      { onConflict: 'user_nickname,song_id' }
+    );
+  } catch(e){}
+}
+
+// ─── Kuromoji ─────────────────────────────────────────────────────
+function initKuromoji() {
+  return new Promise((resolve) => {
+    if (state.tokenizer) { resolve(state.tokenizer); return; }
+    // ใช้ unpkg แทน jsdelivr เพื่อแก้ปัญหา 406
+    kuromoji.builder({ dicPath: 'https://unpkg.com/kuromoji@0.1.2/dict' })
+      .build((err, tokenizer) => {
+        if (err) { console.warn('Kuromoji failed:', err); resolve(null); return; }
+        state.tokenizer = tokenizer;
+        resolve(tokenizer);
+      });
+  });
+}
+function tokenizeLine(tokenizer, line) {
+  if (!tokenizer) return { furigana: [], tokens: [] };
+  const tokens = tokenizer.tokenize(line);
+  const furigana = [];
+  tokens.forEach(t => {
+    if (t.reading && /[一-龯]/.test(t.surface_form)) {
+      const hira = t.reading.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+      furigana.push({ k: t.surface_form, r: hira });
+    }
+  });
+  return { furigana, tokens };
+}
+
+// ─── DOM refs ─────────────────────────────────────────────────────
+const searchInput      = document.getElementById('searchInput');
+const clearBtn         = document.getElementById('clearBtn');
+const searchResults    = document.getElementById('searchResults');
+const emptyState       = document.getElementById('emptyState');
+const apikeySection    = document.getElementById('apikeySection');
+const pinnedSection    = document.getElementById('pinnedSection');
+const recentSection    = document.getElementById('recentSection');
+const lyricsView       = document.getElementById('lyricsView');
+const dashboardWidgets = document.getElementById('dashboardWidgets');
+const backBtn          = document.getElementById('backBtn');
+const appLogo          = document.getElementById('appLogo');
+
+// ─── Init ─────────────────────────────────────────────────────────
+async function init() {
+  renderApiKeySection();
+  renderNicknameSection();
+  renderPinned();
+  if (state.nickname) { await syncRecentSearches(state.nickname); }
+  else { renderRecentSearches(); }
+  bindJlptToggles();
+
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.trim();
+    clearBtn.style.display = q ? 'block' : 'none';
+    clearTimeout(state.searchTimer);
+    if (q.length < 2) { hideSearchResults(); return; }
+    state.searchTimer = setTimeout(() => searchLRCLib(q), 450);
+  });
+  clearBtn.addEventListener('click', () => {
+    searchInput.value = ''; clearBtn.style.display = 'none'; hideSearchResults();
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.app-header')) hideSearchResults(); });
+  backBtn.addEventListener('click', resetToDashboard);
+  appLogo.addEventListener('click', resetToDashboard);
+}
+
+// ─── Navigation ───────────────────────────────────────────────────
+function resetToDashboard() {
+  state.currentSong = null;
+  lyricsView.innerHTML = '';
+  backBtn.style.display = 'none';
+  dashboardWidgets.style.display = 'block';
+  emptyState.style.display = 'flex';
+  hideSearchResults();
+  searchInput.value = '';
+  clearBtn.style.display = 'none';
+  renderRecentSearches();
+  renderPinned();
+}
+
+// ─── JLPT Toggles ─────────────────────────────────────────────────
+function bindJlptToggles() {
+  document.querySelectorAll('.jlpt-toggle').forEach(btn => {
+    const lv = btn.dataset.lv;
+    if (state.jlptLevels.includes(lv)) btn.classList.add('active');
+    else btn.classList.remove('active');
+    btn.addEventListener('click', () => {
+      btn.classList.toggle('active');
+      state.jlptLevels = [...document.querySelectorAll('.jlpt-toggle.active')].map(b => b.dataset.lv);
+      if (!state.jlptLevels.length) { btn.classList.add('active'); state.jlptLevels = [lv]; }
+      localStorage.setItem('jlpt_levels', JSON.stringify(state.jlptLevels));
+      if (state.currentSong && state.cache[`${state.currentSong.id}_all`]) {
+        const d = state.cache[`${state.currentSong.id}_all`];
+        renderLyrics(d.lines, d.skips, state.currentSong.title, state.currentSong.artist, state.currentSong.id, true);
+      }
+    });
+  });
+}
+
+// ─── API Key ──────────────────────────────────────────────────────
+function renderApiKeySection() {
+  if (state.apiKey) {
+    const label = isGeminiKey(state.apiKey) ? '✦ Gemini' : '✦ Claude';
+    apikeySection.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0 4px;">
+        <span style="font-size:12px;color:var(--muted)">🔑 API Key: <span style="color:var(--N5)">${label}</span></span>
+        <button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="clearApiKey()">เปลี่ยน Key</button>
+      </div>`;
+    return;
+  }
+  apikeySection.innerHTML = `
+    <div class="apikey-section">
+      <h3>🔑 ใส่ API Key</h3>
+      <p>รองรับ <strong style="color:var(--N5)">Gemini</strong> (ฟรี) หรือ <strong style="color:var(--accent)">Claude</strong><br>เก็บไว้ใน localStorage เครื่องคุณเท่านั้น ไม่ส่งไปไหน</p>
+      <div class="apikey-row">
+        <input type="password" id="apiKeyInput" placeholder="AIza... (Gemini) หรือ sk-ant... (Claude)" autocomplete="off">
+        <button class="btn" onclick="saveApiKey()">บันทึก</button>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+        รับ Gemini key ฟรีได้ที่ <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--N5)">aistudio.google.com/apikey</a>
+      </div>
+    </div>`;
+}
+function saveApiKey() {
+  const val = document.getElementById('apiKeyInput').value.trim();
+  if (!val.startsWith('AIza') && !val.startsWith('sk-ant')) {
+    alert('API Key ไม่ถูกต้อง'); return;
+  }
+  state.apiKey = val; localStorage.setItem('claude_api_key', val); renderApiKeySection();
+}
+function clearApiKey() {
+  state.apiKey = ''; localStorage.removeItem('claude_api_key'); renderApiKeySection();
+}
+
+// ─── Nickname ─────────────────────────────────────────────────────
+function renderNicknameSection() {
+  const sec = document.getElementById('nicknameSection');
+  if (!sec) return;
+  if (state.nickname) {
+    sec.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0 4px;">
+        <span style="font-size:12px;color:var(--muted)">👤 <span style="color:var(--accent)">${esc(state.nickname)}</span></span>
+        <button class="btn secondary" style="font-size:11px;padding:4px 10px;" onclick="changeNickname()">เปลี่ยน</button>
+      </div>`;
+  } else {
+    sec.innerHTML = `
+      <div class="apikey-section">
+        <h3>👤 ตั้งชื่อผู้ใช้</h3>
+        <p>ใช้แยก playlist ของแต่ละคน เช่น "thana"</p>
+        <div class="apikey-row">
+          <input type="text" id="nicknameInput" placeholder="ชื่อของคุณ..." autocomplete="off" maxlength="20">
+          <button class="btn" onclick="saveNickname()">บันทึก</button>
+        </div>
+      </div>`;
+  }
+}
+async function saveNickname() {
+  const val = document.getElementById('nicknameInput')?.value.trim();
+  if (!val) return;
+  state.nickname = val; localStorage.setItem('user_nickname', val);
+  renderNicknameSection(); renderPinned();
+  await syncRecentSearches(val);
+}
+function changeNickname() {
+  state.nickname = ''; localStorage.removeItem('user_nickname');
+  renderNicknameSection(); renderPinned();
+  state.recentSearches = JSON.parse(localStorage.getItem('recent_searches') || '[]');
+  renderRecentSearches();
+}
+
+// ─── Recent Searches ──────────────────────────────────────────────
+async function syncRecentSearches(nickname) {
+  if (!nickname) return;
+  try {
+    let local = JSON.parse(localStorage.getItem('recent_searches') || '[]');
+    const dbRows = await supaGetRecent(nickname);
+    const dbMapped = dbRows.map(r => ({ id: r.song_id, title: r.title, artist: r.artist }));
+    let merged = [...local];
+    dbMapped.forEach(s => { if (!merged.some(m => m.id === s.id)) merged.push(s); });
+    if (merged.length > 15) merged = merged.slice(0, 15);
+    state.recentSearches = merged;
+    localStorage.setItem('recent_searches', JSON.stringify(merged));
+    await supaSyncRecentBatch(nickname, merged);
+    renderRecentSearches();
+  } catch(e) { console.warn('sync recent failed:', e); renderRecentSearches(); }
+}
+function saveToRecentSearches(id, title, artist) {
+  state.recentSearches = state.recentSearches.filter(s => s.id !== id);
+  state.recentSearches.unshift({ id, title, artist });
+  if (state.recentSearches.length > 15) state.recentSearches.pop();
+  localStorage.setItem('recent_searches', JSON.stringify(state.recentSearches));
+  if (state.nickname) supaAddRecent(state.nickname, { id, title, artist });
+}
+function renderRecentSearches() {
+  if (!recentSection) return;
+  if (!state.recentSearches.length) { recentSection.innerHTML = ''; return; }
+  recentSection.innerHTML = `
+    <div class="recent-section">
+      <div class="section-label">เพลงที่เคยเปิดดูล่าสุด</div>
+      ${state.recentSearches.map(s => `
+        <div class="recent-item" onclick="loadSongById(${s.id},'${esc(s.title)}','${esc(s.artist)}')">
+          <div class="recent-icon">🕒</div>
+          <div class="recent-info">
+            <div class="recent-title">${esc(s.title)}</div>
+            <div class="recent-artist">${esc(s.artist)}</div>
+          </div>
+          <button class="history-del-btn" onclick="event.stopPropagation();deleteRecentSearch(${s.id})" title="ลบ">✕</button>
+        </div>`).join('')}
+    </div>`;
+}
+async function deleteRecentSearch(id) {
+  state.recentSearches = state.recentSearches.filter(s => s.id !== id);
+  localStorage.setItem('recent_searches', JSON.stringify(state.recentSearches));
+  renderRecentSearches();
+  if (state.nickname) await supaDeleteRecent(state.nickname, id);
+}
+
+// ─── Pinned ───────────────────────────────────────────────────────
+function isPinned(id) { return state.pinned.some(p => p.id === id); }
+async function togglePin(song) {
+  if (!state.nickname) { alert('ตั้งชื่อผู้ใช้ก่อนนะครับ'); return; }
+  if (isPinned(song.id)) await supaUnpin(state.nickname, song.id);
+  else await supaPin(state.nickname, song);
+  await renderPinned();
+  const pb = document.getElementById('pin-btn');
+  if (pb) pb.textContent = isPinned(song.id) ? '📌' : '📍';
+}
+async function renderPinned() {
+  if (!state.nickname) { pinnedSection.innerHTML = ''; return; }
+  const songs = await supaGetPinned(state.nickname);
+  state.pinned = songs.map(s => ({ id: s.song_id, title: s.title, artist: s.artist }));
+  if (!songs.length) { pinnedSection.innerHTML = ''; return; }
+  pinnedSection.innerHTML = `
+    <div class="pinned-section">
+      <div class="section-label">บันทึกไว้</div>
+      ${songs.map(s => `
+        <div class="pinned-item" onclick="loadSongById(${s.song_id},'${esc(s.title)}','${esc(s.artist)}')">
+          <div class="pinned-icon">🎵</div>
+          <div class="pinned-info">
+            <div class="pinned-title">${esc(s.title)}</div>
+            <div class="pinned-artist">${esc(s.artist)}</div>
+          </div>
+          <button class="pin-btn pinned" onclick="event.stopPropagation();removePin(${s.song_id})">📌</button>
+        </div>`).join('')}
+    </div>`;
+}
+async function removePin(id) {
+  if (!state.nickname) return;
+  await supaUnpin(state.nickname, id); await renderPinned();
+}
+
+// ─── Search ───────────────────────────────────────────────────────
+function setSearchMode(mode) {
+  state.searchMode = mode;
+  document.getElementById('modeTrack').classList.toggle('active', mode === 'track');
+  document.getElementById('modeArtist').classList.toggle('active', mode === 'artist');
+  searchInput.placeholder = mode === 'track' ? 'ค้นหาชื่อเพลง...' : 'ค้นหาชื่อศิลปิน...';
+  const q = searchInput.value.trim();
+  if (q.length >= 2) searchLRCLib(q);
+}
+async function searchLRCLib(q) {
+  showSearchStatus('กำลังค้นหา...');
+  try {
+    const url = state.searchMode === 'artist'
+      ? `https://lrclib.net/api/search?artist_name=${encodeURIComponent(q)}`
+      : `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error();
+    renderSearchResults((await res.json()).slice(0, 12));
+  } catch { showSearchStatus('ค้นหาไม่ได้ ลองใหม่อีกครั้ง'); }
+}
+function showSearchStatus(msg) { searchResults.style.display = 'block'; searchResults.innerHTML = `<div class="search-status">${msg}</div>`; }
+function hideSearchResults() { searchResults.style.display = 'none'; searchResults.innerHTML = ''; }
+function renderSearchResults(items) {
+  if (!items?.length) { showSearchStatus('ไม่พบเพลง ลองค้นหาด้วยชื่ออื่น'); return; }
+  const withLyrics = items.filter(i => i.syncedLyrics || i.plainLyrics);
+  if (!withLyrics.length) { showSearchStatus('พบเพลงแต่ไม่มีเนื้อเพลงในฐานข้อมูล'); return; }
+  searchResults.style.display = 'block';
+  searchResults.innerHTML = withLyrics.map(item => `
+    <div class="search-result-item" onclick="loadSong(${item.id},'${esc(item.trackName)}','${esc(item.artistName)}')">
+      <div class="result-icon">🎵</div>
+      <div class="result-info">
+        <div class="result-title">${esc(item.trackName)}</div>
+        <div class="result-artist">${esc(item.artistName)}</div>
+      </div>
+      ${state.cache[item.id + '_all'] ? '<span class="result-badge">✓ cached</span>' : ''}
+    </div>`).join('');
+}
+
+// ─── Load Song ────────────────────────────────────────────────────
+async function loadSongById(id, title, artist) { loadSong(id, title, artist); }
+async function loadSong(id, title, artist) {
+  hideSearchResults();
+  searchInput.value = ''; clearBtn.style.display = 'none';
+  dashboardWidgets.style.display = 'none';
+  backBtn.style.display = 'flex';
+  state.currentSong = { id, title, artist };
+  saveToRecentSearches(id, title, artist);
+
+  const cacheKey = `${id}_all`;
+  if (state.cache[cacheKey]) {
+    const c = state.cache[cacheKey];
+    renderLyrics(c.lines, c.skips, title, artist, id, true); return;
+  }
+  showSkeleton(title, artist, id);
+  const supaCache = await supaGetCache(id);
+  if (supaCache) {
+    state.cache[cacheKey] = supaCache;
+    localStorage.setItem('lyrics_cache', JSON.stringify(state.cache));
+    renderLyrics(supaCache.lines, supaCache.skips, title, artist, id, true); return;
+  }
+
+  try {
+    const res = await fetch(`https://lrclib.net/api/get/${id}`);
+    if (!res.ok) throw new Error('ดึงเนื้อเพลงไม่ได้');
+    const data = await res.json();
+    const { lines: rawLyrics, skips } = extractPlainLyrics(data.syncedLyrics || data.plainLyrics || '');
+    if (!rawLyrics?.length) throw new Error('ไม่มีเนื้อเพลงในฐานข้อมูล');
+    state.currentSkips = skips;
+    if (!state.apiKey) { showError('ยังไม่ได้ใส่ API Key'); return; }
+
+    showProcessingBanner(title, 'กำลังโหลดคลังคำอ่านคันจิ (Kuromoji)...');
+    const tokenizer = await initKuromoji();
+    const tokenizedLines = rawLyrics.map(line => {
+      const { furigana, tokens } = tokenizeLine(tokenizer, line);
+      return { text: line, furigana, tokens };
+    });
+
+    showProcessingBanner(title, 'AI กำลังวิเคราะห์คำศัพท์และไวยากรณ์...');
+    const analyzed = await analyzeWithAI(tokenizedLines);
+    analyzed.forEach((line, i) => { if (tokenizedLines[i]) line.furigana = tokenizedLines[i].furigana; });
+
+    const cacheData = { lines: analyzed, skips: [...state.currentSkips] };
+    state.cache[cacheKey] = cacheData;
+    localStorage.setItem('lyrics_cache', JSON.stringify(state.cache));
+    await supaSetCache(id, cacheData);
+    renderLyrics(analyzed, [...state.currentSkips], title, artist, id, false);
+  } catch(err) {
+    showError(err.message || 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง');
+  }
+}
+
+function extractPlainLyrics(raw) {
+  if (!raw) return { lines: [], skips: new Set() };
+  const seen = new Set(), skips = new Set();
+  const allLines = raw.split('\n').map(l => l.replace(/^\[\d+:\d+\.\d+\]\s?/, '').trim());
+  let outputIdx = 0, lines = [], prevSkipped = false;
+  allLines.forEach(line => {
+    if (line.length <= 1 || !/[\u3040-\u30FF\u4E00-\u9FAF]/.test(line)) return;
+    if (seen.has(line)) { prevSkipped = true; return; }
+    seen.add(line);
+    if (prevSkipped) skips.add(outputIdx);
+    lines.push(line); outputIdx++; prevSkipped = false;
+  });
+  return { lines, skips };
+}
+
+// ─── AI: Claude Opus 4 แปลประโยค + Sonnet 4 วิเคราะห์ vocab/grammar ──
+function isGeminiKey(key) { return key.startsWith('AIza'); }
+
+// Opus 4: แปลเนื้อเพลงทุกบรรทัดพร้อมกัน (1 call)
+async function translateWithOpus(lines) {
+  if (isGeminiKey(state.apiKey)) return null; // Gemini ไม่มี Opus ข้ามไปเลย
+  const lyricsText = lines.join('\n');
+  const prompt = `แปลเนื้อเพลงภาษาญี่ปุ่นต่อไปนี้เป็นภาษาไทยทีละบรรทัด โดยรักษาความหมาย อารมณ์ และบริบทเพลงไว้ให้ครบ ตอบเป็น JSON array ของ string เท่านั้น ห้ามมีข้อความอื่น
+
+เนื้อเพลง (${lines.length} บรรทัด):
+${lyricsText}
+
+ตัวอย่างรูปแบบที่ต้องการ:
+["แปลบรรทัดที่ 1", "แปลบรรทัดที่ 2", ...]
+
+กฎ: ต้องมีครบ ${lines.length} items เรียงตามลำดับเดิมทุกบรรทัด ส่ง JSON array เท่านั้น`;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-6',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+  if (!res.ok) { const err = await res.json(); throw new Error(`Opus Error: ${err.error?.message}`); }
+  const data = await res.json();
+  const text = data.content[0]?.text || '';
+  let clean = text.replace(/```json\n?/g, '').replace(/```/g, '').trim();
+  const match = clean.match(/\[[\s\S]*\]/);
+  if (match) clean = match[0];
+  return JSON.parse(clean); // string[]
+}
+
+// Sonnet 4 batch: วิเคราะห์ vocab + grammar อย่างเดียว (ไม่ขอ translation)
+function buildAnalysisPrompt(lines) {
+  return `คุณเป็นผู้เชี่ยวชาญภาษาญี่ปุ่น วิเคราะห์เนื้อเพลงต่อไปนี้ ตอบเป็น JSON array เท่านั้น ห้ามมีข้อความอื่น
+
+เนื้อเพลง:
+${lines.join('\n')}
+
+รูปแบบที่ต้องการ:
+[
+  {
+    "id": 1,
+    "text": "บรรทัดเพลงต้นฉบับ ห้ามเปลี่ยนแปลง",
+    "vocab": [
+      {"word": "คำที่ปรากฏในเพลง", "dict": "รูป dictionary form", "mean": "คำแปลไทย", "lv": "N5"}
+    ],
+    "grammar": {"text": "pattern ไวยากรณ์", "exp": "คำอธิบายภาษาไทย", "lv": "N4"}
+  }
+]
+
+กฎเหล็ก:
+1. text — ต้องตรงต้นฉบับ ห้ามตกหล่น ต้องมีครบ ${lines.length} items
+2. lv — N5/N4/N3/N2/N1 เท่านั้น
+3. grammar ที่ไม่มีให้ใส่ null
+4. vocab.word ต้องเป็น surface form ที่ปรากฏในเพลงจริง
+5. ส่ง JSON array ล้วน ห้ามมี markdown หรือ backtick`;
+}
+
+async function callSonnet(prompt) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 16000, messages: [{ role: 'user', content: prompt }] })
+  });
+  if (!res.ok) { const err = await res.json(); throw new Error(`Sonnet Error: ${err.error?.message}`); }
+  const data = await res.json();
+  if (data.usage) state.lastTokenUsage = data.usage;
+  return data.content[0]?.text || '';
+}
+
+async function callGemini(prompt) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${state.apiKey}`,
+    { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ contents:[{parts:[{text:prompt}]}], generationConfig:{maxOutputTokens:8192,temperature:0.1,responseMimeType:'application/json'} }) }
+  );
+  if (!res.ok) { const err = await res.json(); throw new Error(`Gemini Error: ${err.error?.message}`); }
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+function parseJSONResponse(text) {
+  let clean = text.replace(/```json\n?/g, '').replace(/```/g, '').trim();
+  const match = clean.match(/\[[\s\S]*\]/);
+  if (match) clean = match[0];
+  return JSON.parse(clean);
+}
+
+async function analyzeWithAI(tokenizedLines) {
+  const allLines = tokenizedLines.map(l => l.text);
+  const BATCH = 20;
+  const totalBatches = Math.ceil(allLines.length / BATCH);
+
+  // ── Step 1: Opus 4 แปลทั้งเพลงพร้อมกัน (Claude เท่านั้น) ──
+  let translations = null;
+  if (!isGeminiKey(state.apiKey)) {
+    showProcessingBanner(state.currentSong?.title || '', '✦ Opus 4 กำลังแปลเนื้อเพลง...');
+    try {
+      translations = await translateWithOpus(allLines);
+    } catch(e) {
+      console.warn('Opus translation failed, fallback to Sonnet:', e);
+      translations = null;
+    }
+  }
+
+  // ── Step 2: Sonnet 4 (หรือ Gemini) วิเคราะห์ vocab/grammar เป็น batch ──
+  const results = [];
+  for (let i = 0; i < allLines.length; i += BATCH) {
+    const batchLines = allLines.slice(i, i + BATCH);
+    const batchNum = Math.floor(i / BATCH) + 1;
+    showProcessingBanner(state.currentSong?.title || '',
+      `${isGeminiKey(state.apiKey) ? '✦ Gemini' : '✦ Sonnet 4'} วิเคราะห์คำศัพท์... (ชุดที่ ${batchNum}/${totalBatches})`);
+
+    const prompt = isGeminiKey(state.apiKey)
+      ? buildAnalysisPromptWithTranslation(batchLines) // Gemini ต้องขอ translation ด้วย
+      : buildAnalysisPrompt(batchLines);
+
+    let text = '';
+    try {
+      text = isGeminiKey(state.apiKey) ? await callGemini(prompt) : await callSonnet(prompt);
+      results.push(...parseJSONResponse(text));
+    } catch(e) {
+      console.error(`Batch ${batchNum} failed:`, e, '\nRaw:', text);
+      throw new Error(`วิเคราะห์ชุดที่ ${batchNum} ไม่สำเร็จ: ${e.message}`);
+    }
+  }
+
+  // ── Step 3: ใส่คำแปลจาก Opus กลับเข้าไปใน results ──
+  if (translations) {
+    results.forEach((line, i) => { line.th = translations[i] || ''; });
+  }
+
+  return results;
+}
+
+// Gemini version ต้องขอ translation ด้วยในคำสั่งเดียว
+function buildAnalysisPromptWithTranslation(lines) {
+  return `คุณเป็นผู้เชี่ยวชาญภาษาญี่ปุ่น วิเคราะห์เนื้อเพลงต่อไปนี้ ตอบเป็น JSON array เท่านั้น ห้ามมีข้อความอื่น
+
+เนื้อเพลง:
+${lines.join('\n')}
+
+รูปแบบที่ต้องการ:
+[
+  {
+    "id": 1,
+    "text": "บรรทัดเพลงต้นฉบับ ห้ามเปลี่ยนแปลง",
+    "th": "คำแปลภาษาไทยทั้งบรรทัดแบบสละสลวย",
+    "vocab": [
+      {"word": "คำที่ปรากฏในเพลง", "dict": "รูป dictionary form", "mean": "คำแปลไทย", "lv": "N5"}
+    ],
+    "grammar": {"text": "pattern ไวยากรณ์", "exp": "คำอธิบายภาษาไทย", "lv": "N4"}
+  }
+]
+
+กฎเหล็ก:
+1. text — ต้องตรงต้นฉบับ ต้องมีครบ ${lines.length} items
+2. lv — N5/N4/N3/N2/N1 เท่านั้น  
+3. grammar ที่ไม่มีให้ใส่ null
+4. vocab.word ต้องเป็น surface form ที่ปรากฏในเพลงจริง
+5. ส่ง JSON array ล้วน ห้ามมี markdown`;
+}
+
+// ─── Render helpers ───────────────────────────────────────────────
+function showSkeleton(title, artist, id) {
+  lyricsView.innerHTML = `
+    <div class="song-header">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div><div class="song-title">${esc(title)}</div><div class="song-artist">${esc(artist)}</div></div>
+        <button class="pin-btn ${isPinned(id)?'pinned':''}" id="pin-btn" onclick="togglePin({id:${id},title:'${esc(title)}',artist:'${esc(artist)}'})">
+          ${isPinned(id)?'📌':'📍'}
+        </button>
+      </div>
+    </div>
+    <div class="processing-banner"><div class="spinner"></div><span>กำลังดึงเนื้อเพลง...</span></div>
+    ${Array(4).fill(0).map(()=>`<div class="skeleton-row"><div class="skeleton-line sk-jp"></div><div class="skeleton-line sk-th"></div></div>`).join('')}`;
+}
+function showProcessingBanner(title, msg) {
+  const el = lyricsView.querySelector('.processing-banner');
+  if (el) el.innerHTML = `<div class="spinner"></div><span>${msg}</span>`;
+}
+function showError(msg) {
+  lyricsView.innerHTML = `<div class="error-banner">⚠️ ${esc(msg)}</div><div class="empty-state" style="padding:30px 0;"><p>ลองค้นหาเพลงอื่น หรือตรวจสอบ API Key</p></div>`;
+}
+
+function buildJpDisplay(line) {
+  const text = line.text || '';
+  if (!text) return '';
+  const furigana = [...(line.furigana||[])].sort((a,b)=>b.k.length-a.k.length);
+  const highlights = [];
+  (line.vocab||[]).forEach(v=>{ if(v.word&&state.jlptLevels.includes(v.lv)) highlights.push({w:v.word,lv:v.lv}); });
+  if (line.grammar?.text && state.jlptLevels.includes(line.grammar.lv)) {
+    const pat = line.grammar.text.replace(/^[～〜]/,'');
+    if (pat) highlights.push({w:pat,lv:line.grammar.lv});
+  }
+  highlights.sort((a,b)=>b.w.length-a.w.length);
+  let segs = [{t:text,lv:null}];
+  highlights.forEach(({w,lv})=>{
+    const next=[];
+    segs.forEach(seg=>{
+      if(seg.lv!==null){next.push(seg);return;}
+      const parts=seg.t.split(w);
+      if(parts.length===1){next.push(seg);return;}
+      parts.forEach((p,i)=>{
+        if(p) next.push({t:p,lv:null});
+        if(i<parts.length-1) next.push({t:w,lv});
+      });
+    });
+    segs=next;
+  });
+  function applyFurigana(segText){
+    let parts=[{t:segText,ruby:null}];
+    furigana.forEach(({k,r})=>{
+      const next=[];
+      parts.forEach(p=>{
+        if(p.ruby!==null){next.push(p);return;}
+        const idx=p.t.indexOf(k);
+        if(idx===-1){next.push(p);return;}
+        if(idx>0) next.push({t:p.t.slice(0,idx),ruby:null});
+        next.push({t:k,ruby:r});
+        const rest=p.t.slice(idx+k.length);
+        if(rest) next.push({t:rest,ruby:null});
+      });
+      parts=next;
+    });
+    return parts;
+  }
+  return segs.map(seg=>{
+    const rubied=applyFurigana(seg.t);
+    const inner=rubied.map(p=>p.ruby?`<ruby>${p.t}<rt>${p.ruby}</rt></ruby>`:p.t).join('');
+    return seg.lv?`<span class="color-${seg.lv}">${inner}</span>`:inner;
+  }).join('');
+}
+
+function renderLyrics(lines, skips, title, artist, id, fromCache) {
+  const pinned = isPinned(id);
+  lyricsView.innerHTML = `
+    <div class="song-header">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div><div class="song-title">${esc(title)}</div><div class="song-artist">${esc(artist)}</div></div>
+        <button class="pin-btn ${pinned?'pinned':''}" id="pin-btn" onclick="togglePin({id:${id},title:'${esc(title)}',artist:'${esc(artist)}'})">
+          ${pinned?'📌':'📍'}
+        </button>
+      </div>
+      <div class="song-meta">
+        <span class="meta-chip">${lines.length} บรรทัด</span>
+        <span class="meta-chip">N5–N1</span>
+        ${fromCache
+          ? '<span class="meta-chip cached">✓ จากคลังแชร์</span>'
+          : `<span class="meta-chip">${isGeminiKey(state.apiKey)?'✦ Gemini':'✦ Opus4+Sonnet4'}</span>`}
+        ${!fromCache&&state.lastTokenUsage?`<span class="meta-chip">🔢 ${(state.lastTokenUsage.input_tokens+state.lastTokenUsage.output_tokens).toLocaleString()} tokens</span>`:''}
+      </div>
+    </div>`;
+
+  const skipsSet = new Set(skips||[]);
+  lines.forEach((line,i)=>{
+    if(skipsSet.has(i)){
+      const div=document.createElement('div');
+      div.className='skip-divider'; div.innerHTML='<span>ท่อนซ้ำ</span>';
+      lyricsView.appendChild(div);
+    }
+    const row=document.createElement('div');
+    row.className='lyric-row';
+    const filteredVocab=(line.vocab||[]).filter(v=>state.jlptLevels.includes(v.lv));
+    const showGrammar=line.grammar&&state.jlptLevels.includes(line.grammar.lv);
+    const hasDetail=filteredVocab.length>0||showGrammar;
+    const detailId=`d${i}`;
+
+    let vocabHtml='';
+    if(filteredVocab.length){
+      vocabHtml=`<div class="detail-section"><div class="detail-label">คำศัพท์ในท่อนนี้</div>
+        ${filteredVocab.map(v=>`
+          <div class="vocab-item">
+            <span class="vocab-word color-${v.lv}">${esc(v.word)}</span>
+            ${v.dict&&v.dict!==v.word?`<span style="font-size:11px;color:#666">（${esc(v.dict)}）</span>`:''}
+            <span style="color:#555">—</span>
+            <span class="vocab-mean">${esc(v.mean)}</span>
+            <span class="lvl-badge ${v.lv}">${v.lv}</span>
+          </div>`).join('')}
+      </div>`;
+    }
+    let grammarHtml='';
+    if(showGrammar){
+      grammarHtml=`<div class="detail-section"><div class="detail-label">ไวยากรณ์น่ารู้</div>
+        <div class="grammar-item">
+          <span class="grammar-pattern color-${line.grammar.lv}">${esc(line.grammar.text)}</span>
+          <span class="grammar-exp">${esc(line.grammar.exp)}</span>
+          <span class="lvl-badge ${line.grammar.lv}">${line.grammar.lv}</span>
+        </div>
+      </div>`;
+    }
+    const detailColor=showGrammar?`var(--${line.grammar.lv})`:'var(--accent)';
+    row.innerHTML=`
+      <div class="jp-text">${buildJpDisplay(line)}</div>
+      <div class="th-text">${esc(line.th||'')}</div>
+      ${hasDetail?`<div class="detail" id="${detailId}" style="--detail-color:${detailColor}">${vocabHtml}${grammarHtml}</div>`:''}`;
+    if(hasDetail){
+      row.addEventListener('click',()=>{
+        const d=document.getElementById(detailId);
+        d.style.display=d.style.display==='block'?'none':'block';
+      });
+    }
+    lyricsView.appendChild(row);
+  });
+}
+
+function esc(str) {
+  if(!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+init();
+</script>
+</body>
+</html>
