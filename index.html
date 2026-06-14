@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>J-Music Learning App</title>
-  <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -201,8 +200,7 @@ const state = {
   searchMode: 'track',
   currentSkips: new Set(),
   lastTokenUsage: null,
-  nickname: localStorage.getItem('user_nickname') || '',
-  tokenizer: null
+  nickname: localStorage.getItem('user_nickname') || ''
 };
 
 // ─── Supabase ─────────────────────────────────────────────────────
@@ -257,141 +255,6 @@ async function supaSyncRecentBatch(nickname, songs) {
       { onConflict: 'user_nickname,song_id' }
     );
   } catch(e){}
-}
-
-// ─── Kuromoji ─────────────────────────────────────────────────────
-// 12 ไฟล์ dictionary ที่ Kuromoji ต้องใช้
-const KUROMOJI_DICT_FILES = [
-  'base.dat.gz','cc.dat.gz','check.dat.gz',
-  'tid.dat.gz','tid_map.dat.gz','tid_pos.dat.gz',
-  'unk.dat.gz','unk_char.dat.gz','unk_compat.dat.gz',
-  'unk_invoke.dat.gz','unk_map.dat.gz','unk_pos.dat.gz'
-];
-const KUROMOJI_BASE_URL = 'https://unpkg.com/kuromoji@0.1.2/dict/';
-
-// state สำหรับรายงาน progress
-state.kuromojiProgress = { stage: 'idle', current: 0, total: 12, currentFile: '', error: null };
-
-function updateKuromojiProgress(stage, current, file, error) {
-  state.kuromojiProgress.stage = stage;
-  state.kuromojiProgress.current = current;
-  state.kuromojiProgress.currentFile = file || '';
-  state.kuromojiProgress.error = error || null;
-  // อัปเดต UI ถ้ามี banner อยู่
-  const banner = lyricsView.querySelector('.processing-banner');
-  if (banner) {
-    let msg = '';
-    if (stage === 'fetching') {
-      const pct = Math.round((current / 12) * 100);
-      msg = `📥 โหลดคลังคันจิ ${current}/12 (${pct}%) — ${file}`;
-    } else if (stage === 'building') {
-      msg = `⚙️ ประมวลผลคลังคันจิ (อาจใช้เวลาบนมือถือ)...`;
-    } else if (stage === 'done') {
-      msg = `✓ คลังคันจิพร้อมใช้`;
-    } else if (stage === 'error') {
-      msg = `❌ ${error}`;
-    }
-    if (msg) banner.innerHTML = `<div class="spinner"></div><span>${msg}</span>`;
-  }
-  console.log('[Kuromoji]', stage, current ? `${current}/12` : '', file || '', error || '');
-}
-
-// fetch ไฟล์เดียว พร้อม timeout
-async function fetchWithTimeout(url, timeoutMs = 20000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.arrayBuffer();
-  } catch (e) {
-    clearTimeout(timer);
-    if (e.name === 'AbortError') throw new Error(`timeout หลัง ${timeoutMs/1000}s`);
-    throw e;
-  }
-}
-
-function initKuromoji() {
-  return new Promise(async (resolve) => {
-    if (state.tokenizer) { resolve(state.tokenizer); return; }
-
-    const t0 = performance.now();
-    const dictData = {};
-
-    // Stage 1: โหลด 12 ไฟล์ทีละไฟล์ พร้อมรายงาน progress
-    try {
-      for (let i = 0; i < KUROMOJI_DICT_FILES.length; i++) {
-        const filename = KUROMOJI_DICT_FILES[i];
-        updateKuromojiProgress('fetching', i + 1, filename);
-        const t1 = performance.now();
-        try {
-          dictData[filename] = await fetchWithTimeout(KUROMOJI_BASE_URL + filename, 30000);
-          console.log(`[Kuromoji] ${filename} OK (${Math.round(performance.now() - t1)}ms, ${(dictData[filename].byteLength/1024).toFixed(0)}KB)`);
-        } catch (e) {
-          updateKuromojiProgress('error', i + 1, filename, `${filename} โหลดไม่สำเร็จ: ${e.message}`);
-          console.error(`[Kuromoji] ${filename} FAILED:`, e);
-          resolve(null);
-          return;
-        }
-      }
-      console.log(`[Kuromoji] ดาวน์โหลดเสร็จในเวลา ${Math.round(performance.now() - t0)}ms`);
-    } catch (e) {
-      updateKuromojiProgress('error', 0, '', `download failed: ${e.message}`);
-      resolve(null);
-      return;
-    }
-
-    // Stage 2: ส่ง buffer ให้ Kuromoji ใช้ — override loadArrayBuffer
-    updateKuromojiProgress('building', 12, '');
-    const tBuild = performance.now();
-
-    // ใช้ XMLHttpRequest override trick — Kuromoji ภายในใช้ loadArrayBuffer ผ่าน BrowserDictionaryLoader
-    // ทางที่ตรงที่สุดคือ override loadArrayBuffer ของ instance
-    const builder = kuromoji.builder({ dicPath: KUROMOJI_BASE_URL });
-
-    // หา loader แล้ว override loadArrayBuffer ให้ตอบจาก dictData
-    if (builder.loader && typeof builder.loader.loadArrayBuffer === 'function') {
-      const originalLoad = builder.loader.loadArrayBuffer.bind(builder.loader);
-      builder.loader.loadArrayBuffer = function(url, callback) {
-        const filename = url.split('/').pop().replace(/\.gz$/, '.gz');
-        if (dictData[filename]) {
-          // ส่งคืน buffer ที่โหลดไว้ทันที (Kuromoji จะ gunzip เอง)
-          setTimeout(() => callback(null, dictData[filename]), 0);
-        } else {
-          console.warn('[Kuromoji] ไม่พบ', filename, 'ใน cache, fallback ไป fetch');
-          originalLoad(url, callback);
-        }
-      };
-    } else {
-      console.warn('[Kuromoji] override ไม่ได้ — จะใช้ปกติ (โหลดซ้ำ)');
-    }
-
-    builder.build((err, tokenizer) => {
-      if (err) {
-        updateKuromojiProgress('error', 12, '', `build failed: ${err.message || err}`);
-        console.error('[Kuromoji] build failed:', err);
-        resolve(null);
-        return;
-      }
-      console.log(`[Kuromoji] build เสร็จในเวลา ${Math.round(performance.now() - tBuild)}ms (รวม ${Math.round(performance.now() - t0)}ms)`);
-      updateKuromojiProgress('done', 12, '');
-      state.tokenizer = tokenizer;
-      resolve(tokenizer);
-    });
-  });
-}
-function tokenizeLine(tokenizer, line) {
-  if (!tokenizer) return { furigana: [], tokens: [] };
-  const tokens = tokenizer.tokenize(line);
-  const furigana = [];
-  tokens.forEach(t => {
-    if (t.reading && /[一-龯]/.test(t.surface_form)) {
-      const hira = t.reading.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
-      furigana.push({ k: t.surface_form, r: hira });
-    }
-  });
-  return { furigana, tokens };
 }
 
 // ─── DOM refs ─────────────────────────────────────────────────────
@@ -713,12 +576,18 @@ async function loadSong(id, title, artist) {
     state.currentSkips = skips;
     if (!state.apiKey) { showError('ยังไม่ได้ใส่ API Key'); return; }
 
-    showProcessingBanner(title, 'กำลังโหลดคลังคำอ่านคันจิ (Kuromoji)...');
-    const tokenizer = await initKuromoji();
-    const tokenizedLines = rawLyrics.map(line => {
-      const { furigana, tokens } = tokenizeLine(tokenizer, line);
-      return { text: line, furigana, tokens };
-    });
+    showProcessingBanner(title, 'กำลังหา furigana จากเซิร์ฟเวอร์...');
+    let furiganaByLine;
+    try {
+      furiganaByLine = await tokenizeViaServer(rawLyrics);
+    } catch(e) {
+      console.error('Server tokenize failed:', e);
+      throw new Error('หา furigana ไม่สำเร็จ: ' + e.message);
+    }
+    const tokenizedLines = rawLyrics.map((line, i) => ({
+      text: line,
+      furigana: furiganaByLine[i]?.furigana || []
+    }));
 
     showProcessingBanner(title, 'AI กำลังวิเคราะห์คำศัพท์และไวยากรณ์...');
     const analyzed = await analyzeWithAI(tokenizedLines);
@@ -732,6 +601,28 @@ async function loadSong(id, title, artist) {
   } catch(err) {
     showError(err.message || 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง');
   }
+}
+
+// ─── Server-side tokenize via Supabase Edge Function ──────────────
+const TOKENIZE_ENDPOINT = `${SUPA_URL}/functions/v1/Tokenize`;
+
+async function tokenizeViaServer(lines) {
+  const res = await fetch(TOKENIZE_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${SUPA_KEY}`,
+      'apikey': SUPA_KEY
+    },
+    body: JSON.stringify({ lines })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`HTTP ${res.status}: ${errText}`);
+  }
+  const data = await res.json();
+  if (!data.result) throw new Error(data.error || 'no result');
+  return data.result; // [{furigana:[{k,r},...]}, ...]
 }
 
 function extractPlainLyrics(raw) {
