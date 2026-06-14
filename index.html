@@ -199,7 +199,7 @@ const state = {
   currentSong: null,
   searchMode: 'track',
   currentSkips: new Set(),
-  lastTokenUsage: null,
+  tokenTotals: null, // {opus:{in,out}, sonnet:{in,out}, gemini:{in,out}} ของเพลงปัจจุบัน
   nickname: localStorage.getItem('user_nickname') || ''
 };
 
@@ -557,6 +557,7 @@ async function loadSong(id, title, artist) {
   const cacheKey = `${id}_all`;
   if (state.cache[cacheKey]) {
     const c = state.cache[cacheKey];
+    state.tokenTotals = c.tokenTotals || null;
     renderLyrics(c.lines, c.skips, title, artist, id, true); return;
   }
   showSkeleton(title, artist, id);
@@ -564,6 +565,7 @@ async function loadSong(id, title, artist) {
   if (supaCache) {
     state.cache[cacheKey] = supaCache;
     localStorage.setItem('lyrics_cache', JSON.stringify(state.cache));
+    state.tokenTotals = supaCache.tokenTotals || null;
     renderLyrics(supaCache.lines, supaCache.skips, title, artist, id, true); return;
   }
 
@@ -593,7 +595,11 @@ async function loadSong(id, title, artist) {
     const analyzed = await analyzeWithAI(tokenizedLines);
     analyzed.forEach((line, i) => { if (tokenizedLines[i]) line.furigana = tokenizedLines[i].furigana; });
 
-    const cacheData = { lines: analyzed, skips: [...state.currentSkips] };
+    const cacheData = {
+      lines: analyzed,
+      skips: [...state.currentSkips],
+      tokenTotals: state.tokenTotals // เก็บไว้แสดงใน meta ครั้งต่อไป
+    };
     state.cache[cacheKey] = cacheData;
     localStorage.setItem('lyrics_cache', JSON.stringify(state.cache));
     await supaSetCache(id, cacheData);
@@ -673,6 +679,11 @@ ${lyricsText}
   });
   if (!res.ok) { const err = await res.json(); throw new Error(`Opus Error: ${err.error?.message}`); }
   const data = await res.json();
+  // นับ token Opus
+  if (data.usage) {
+    state.tokenTotals.opus.in += data.usage.input_tokens || 0;
+    state.tokenTotals.opus.out += data.usage.output_tokens || 0;
+  }
   const text = data.content[0]?.text || '';
   let clean = text.replace(/```json\n?/g, '').replace(/```/g, '').trim();
   const match = clean.match(/\[[\s\S]*\]/);
@@ -720,7 +731,10 @@ async function callSonnet(prompt) {
   });
   if (!res.ok) { const err = await res.json(); throw new Error(`Sonnet Error: ${err.error?.message}`); }
   const data = await res.json();
-  if (data.usage) state.lastTokenUsage = data.usage;
+  if (data.usage) {
+    state.tokenTotals.sonnet.in += data.usage.input_tokens || 0;
+    state.tokenTotals.sonnet.out += data.usage.output_tokens || 0;
+  }
   return data.content[0]?.text || '';
 }
 
@@ -732,6 +746,11 @@ async function callGemini(prompt) {
   );
   if (!res.ok) { const err = await res.json(); throw new Error(`Gemini Error: ${err.error?.message}`); }
   const data = await res.json();
+  // นับ token Gemini
+  if (data.usageMetadata) {
+    state.tokenTotals.gemini.in += data.usageMetadata.promptTokenCount || 0;
+    state.tokenTotals.gemini.out += data.usageMetadata.candidatesTokenCount || 0;
+  }
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
@@ -743,6 +762,13 @@ function parseJSONResponse(text) {
 }
 
 async function analyzeWithAI(tokenizedLines) {
+  // reset token counters ก่อนเริ่ม
+  state.tokenTotals = {
+    opus: { in: 0, out: 0 },
+    sonnet: { in: 0, out: 0 },
+    gemini: { in: 0, out: 0 }
+  };
+
   const allLines = tokenizedLines.map(l => l.text);
   const BATCH = 20;
   const totalBatches = Math.ceil(allLines.length / BATCH);
@@ -888,6 +914,31 @@ function buildJpDisplay(line) {
   }).join('');
 }
 
+function renderTokenChips(totals) {
+  if (!totals) return '';
+  const chips = [];
+  let grandTotal = 0;
+  if (totals.opus && (totals.opus.in || totals.opus.out)) {
+    const sum = totals.opus.in + totals.opus.out;
+    grandTotal += sum;
+    chips.push(`<span class="meta-chip" style="color:#fbbf24">🔢 Opus: ${sum.toLocaleString()}</span>`);
+  }
+  if (totals.sonnet && (totals.sonnet.in || totals.sonnet.out)) {
+    const sum = totals.sonnet.in + totals.sonnet.out;
+    grandTotal += sum;
+    chips.push(`<span class="meta-chip" style="color:#60a5fa">🔢 Sonnet: ${sum.toLocaleString()}</span>`);
+  }
+  if (totals.gemini && (totals.gemini.in || totals.gemini.out)) {
+    const sum = totals.gemini.in + totals.gemini.out;
+    grandTotal += sum;
+    chips.push(`<span class="meta-chip" style="color:#a78bfa">🔢 Gemini: ${sum.toLocaleString()}</span>`);
+  }
+  if (chips.length > 1) {
+    chips.push(`<span class="meta-chip" style="font-weight:600">Σ ${grandTotal.toLocaleString()}</span>`);
+  }
+  return chips.join('');
+}
+
 function renderLyrics(lines, skips, title, artist, id, fromCache) {
   const pinned = isPinned(id);
   lyricsView.innerHTML = `
@@ -904,7 +955,7 @@ function renderLyrics(lines, skips, title, artist, id, fromCache) {
         ${fromCache
           ? '<span class="meta-chip cached">✓ จากคลังแชร์</span>'
           : `<span class="meta-chip">${isGeminiKey(state.apiKey)?'✦ Gemini':'✦ Opus4+Sonnet4'}</span>`}
-        ${!fromCache&&state.lastTokenUsage?`<span class="meta-chip">🔢 ${(state.lastTokenUsage.input_tokens+state.lastTokenUsage.output_tokens).toLocaleString()} tokens</span>`:''}
+        ${renderTokenChips(state.tokenTotals)}
       </div>
     </div>`;
 
