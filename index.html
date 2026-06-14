@@ -260,16 +260,125 @@ async function supaSyncRecentBatch(nickname, songs) {
 }
 
 // ─── Kuromoji ─────────────────────────────────────────────────────
+// 12 ไฟล์ dictionary ที่ Kuromoji ต้องใช้
+const KUROMOJI_DICT_FILES = [
+  'base.dat.gz','cc.dat.gz','check.dat.gz',
+  'tid.dat.gz','tid_map.dat.gz','tid_pos.dat.gz',
+  'unk.dat.gz','unk_char.dat.gz','unk_compat.dat.gz',
+  'unk_invoke.dat.gz','unk_map.dat.gz','unk_pos.dat.gz'
+];
+const KUROMOJI_BASE_URL = 'https://unpkg.com/kuromoji@0.1.2/dict/';
+
+// state สำหรับรายงาน progress
+state.kuromojiProgress = { stage: 'idle', current: 0, total: 12, currentFile: '', error: null };
+
+function updateKuromojiProgress(stage, current, file, error) {
+  state.kuromojiProgress.stage = stage;
+  state.kuromojiProgress.current = current;
+  state.kuromojiProgress.currentFile = file || '';
+  state.kuromojiProgress.error = error || null;
+  // อัปเดต UI ถ้ามี banner อยู่
+  const banner = lyricsView.querySelector('.processing-banner');
+  if (banner) {
+    let msg = '';
+    if (stage === 'fetching') {
+      const pct = Math.round((current / 12) * 100);
+      msg = `📥 โหลดคลังคันจิ ${current}/12 (${pct}%) — ${file}`;
+    } else if (stage === 'building') {
+      msg = `⚙️ ประมวลผลคลังคันจิ (อาจใช้เวลาบนมือถือ)...`;
+    } else if (stage === 'done') {
+      msg = `✓ คลังคันจิพร้อมใช้`;
+    } else if (stage === 'error') {
+      msg = `❌ ${error}`;
+    }
+    if (msg) banner.innerHTML = `<div class="spinner"></div><span>${msg}</span>`;
+  }
+  console.log('[Kuromoji]', stage, current ? `${current}/12` : '', file || '', error || '');
+}
+
+// fetch ไฟล์เดียว พร้อม timeout
+async function fetchWithTimeout(url, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.arrayBuffer();
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') throw new Error(`timeout หลัง ${timeoutMs/1000}s`);
+    throw e;
+  }
+}
+
 function initKuromoji() {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     if (state.tokenizer) { resolve(state.tokenizer); return; }
-    // ใช้ unpkg แทน jsdelivr เพื่อแก้ปัญหา 406
-    kuromoji.builder({ dicPath: 'https://unpkg.com/kuromoji@0.1.2/dict' })
-      .build((err, tokenizer) => {
-        if (err) { console.warn('Kuromoji failed:', err); resolve(null); return; }
-        state.tokenizer = tokenizer;
-        resolve(tokenizer);
-      });
+
+    const t0 = performance.now();
+    const dictData = {};
+
+    // Stage 1: โหลด 12 ไฟล์ทีละไฟล์ พร้อมรายงาน progress
+    try {
+      for (let i = 0; i < KUROMOJI_DICT_FILES.length; i++) {
+        const filename = KUROMOJI_DICT_FILES[i];
+        updateKuromojiProgress('fetching', i + 1, filename);
+        const t1 = performance.now();
+        try {
+          dictData[filename] = await fetchWithTimeout(KUROMOJI_BASE_URL + filename, 30000);
+          console.log(`[Kuromoji] ${filename} OK (${Math.round(performance.now() - t1)}ms, ${(dictData[filename].byteLength/1024).toFixed(0)}KB)`);
+        } catch (e) {
+          updateKuromojiProgress('error', i + 1, filename, `${filename} โหลดไม่สำเร็จ: ${e.message}`);
+          console.error(`[Kuromoji] ${filename} FAILED:`, e);
+          resolve(null);
+          return;
+        }
+      }
+      console.log(`[Kuromoji] ดาวน์โหลดเสร็จในเวลา ${Math.round(performance.now() - t0)}ms`);
+    } catch (e) {
+      updateKuromojiProgress('error', 0, '', `download failed: ${e.message}`);
+      resolve(null);
+      return;
+    }
+
+    // Stage 2: ส่ง buffer ให้ Kuromoji ใช้ — override loadArrayBuffer
+    updateKuromojiProgress('building', 12, '');
+    const tBuild = performance.now();
+
+    // ใช้ XMLHttpRequest override trick — Kuromoji ภายในใช้ loadArrayBuffer ผ่าน BrowserDictionaryLoader
+    // ทางที่ตรงที่สุดคือ override loadArrayBuffer ของ instance
+    const builder = kuromoji.builder({ dicPath: KUROMOJI_BASE_URL });
+
+    // หา loader แล้ว override loadArrayBuffer ให้ตอบจาก dictData
+    if (builder.loader && typeof builder.loader.loadArrayBuffer === 'function') {
+      const originalLoad = builder.loader.loadArrayBuffer.bind(builder.loader);
+      builder.loader.loadArrayBuffer = function(url, callback) {
+        const filename = url.split('/').pop().replace(/\.gz$/, '.gz');
+        if (dictData[filename]) {
+          // ส่งคืน buffer ที่โหลดไว้ทันที (Kuromoji จะ gunzip เอง)
+          setTimeout(() => callback(null, dictData[filename]), 0);
+        } else {
+          console.warn('[Kuromoji] ไม่พบ', filename, 'ใน cache, fallback ไป fetch');
+          originalLoad(url, callback);
+        }
+      };
+    } else {
+      console.warn('[Kuromoji] override ไม่ได้ — จะใช้ปกติ (โหลดซ้ำ)');
+    }
+
+    builder.build((err, tokenizer) => {
+      if (err) {
+        updateKuromojiProgress('error', 12, '', `build failed: ${err.message || err}`);
+        console.error('[Kuromoji] build failed:', err);
+        resolve(null);
+        return;
+      }
+      console.log(`[Kuromoji] build เสร็จในเวลา ${Math.round(performance.now() - tBuild)}ms (รวม ${Math.round(performance.now() - t0)}ms)`);
+      updateKuromojiProgress('done', 12, '');
+      state.tokenizer = tokenizer;
+      resolve(tokenizer);
+    });
   });
 }
 function tokenizeLine(tokenizer, line) {
@@ -320,8 +429,6 @@ async function init() {
   backBtn.addEventListener('click', resetToDashboard);
   appLogo.addEventListener('click', resetToDashboard);
 
-  // โหลด Kuromoji ล่วงหน้าทันทีที่เปิดแอป (background) เพื่อไม่ให้ช้าตอนเปิดเพลง
-  setTimeout(() => initKuromoji(), 1000);
 }
 
 // ─── Navigation ───────────────────────────────────────────────────
