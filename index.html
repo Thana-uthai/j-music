@@ -319,6 +319,9 @@ async function init() {
   document.addEventListener('click', e => { if (!e.target.closest('.app-header')) hideSearchResults(); });
   backBtn.addEventListener('click', resetToDashboard);
   appLogo.addEventListener('click', resetToDashboard);
+
+  // โหลด Kuromoji ล่วงหน้าทันทีที่เปิดแอป (background) เพื่อไม่ให้ช้าตอนเปิดเพลง
+  setTimeout(() => initKuromoji(), 1000);
 }
 
 // ─── Navigation ───────────────────────────────────────────────────
@@ -514,33 +517,61 @@ function setSearchMode(mode) {
   const q = searchInput.value.trim();
   if (q.length >= 2) searchLRCLib(q);
 }
+// Regex ตรวจอักษรญี่ปุ่น (hiragana / katakana / kanji)
+const JP_RE = /[぀-ヿ一-龯]/;
+
+function isJapaneseSong(item) {
+  // เช็ค trackName ก่อน (เร็วสุด ไม่ต้องอ่าน lyrics ยาว)
+  if (JP_RE.test(item.trackName || '')) return true;
+  // เช็ค lyrics แค่ 200 ตัวแรกพอ
+  const sample = (item.syncedLyrics || item.plainLyrics || '').slice(0, 200);
+  return JP_RE.test(sample);
+}
+
 async function searchLRCLib(q) {
   showSearchStatus('กำลังค้นหา...');
   try {
-    const url = state.searchMode === 'artist'
-      ? `https://lrclib.net/api/search?artist_name=${encodeURIComponent(q)}`
-      : `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
+    // LRCLib ต้องการ q= เสมอ — artist_name อย่างเดียวไม่ทำงาน
+    const url = `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error();
-    renderSearchResults((await res.json()).slice(0, 12));
+    let data = await res.json();
+
+    if (state.searchMode === 'artist') {
+      // กรองเฉพาะ item ที่ artistName มีคำค้น
+      const qLower = q.toLowerCase();
+      const filtered = data.filter(i => i.artistName && i.artistName.toLowerCase().includes(qLower));
+      // fallback: ถ้า filter แล้วไม่เหลือเลย แสดงทั้งหมด
+      data = filtered.length > 0 ? filtered : data;
+    }
+
+    // กรองเฉพาะเพลงญี่ปุ่น (slice หลังกรองเพื่อให้ได้ 15 เพลงจริงๆ)
+    const jpOnly = data.filter(isJapaneseSong);
+    renderSearchResults(jpOnly.slice(0, 15));
   } catch { showSearchStatus('ค้นหาไม่ได้ ลองใหม่อีกครั้ง'); }
 }
 function showSearchStatus(msg) { searchResults.style.display = 'block'; searchResults.innerHTML = `<div class="search-status">${msg}</div>`; }
 function hideSearchResults() { searchResults.style.display = 'none'; searchResults.innerHTML = ''; }
 function renderSearchResults(items) {
-  if (!items?.length) { showSearchStatus('ไม่พบเพลง ลองค้นหาด้วยชื่ออื่น'); return; }
-  const withLyrics = items.filter(i => i.syncedLyrics || i.plainLyrics);
-  if (!withLyrics.length) { showSearchStatus('พบเพลงแต่ไม่มีเนื้อเพลงในฐานข้อมูล'); return; }
+  if (!items?.length) { showSearchStatus('ไม่พบเพลงญี่ปุ่น ลองค้นหาด้วยชื่อภาษาญี่ปุ่นหรือโรมาจิ'); return; }
   searchResults.style.display = 'block';
-  searchResults.innerHTML = withLyrics.map(item => `
+  searchResults.innerHTML = items.map(item => {
+    const hasLyrics = item.syncedLyrics || item.plainLyrics;
+    const badge = state.cache[item.id + '_all']
+      ? '<span class="result-badge">✓ cached</span>'
+      : hasLyrics
+        ? '<span class="result-badge" style="background:rgba(72,187,120,.15);color:var(--N5)">lyrics</span>'
+        : '';
+    return `
     <div class="search-result-item" onclick="loadSong(${item.id},'${esc(item.trackName)}','${esc(item.artistName)}')">
       <div class="result-icon">🎵</div>
       <div class="result-info">
         <div class="result-title">${esc(item.trackName)}</div>
         <div class="result-artist">${esc(item.artistName)}</div>
       </div>
-      ${state.cache[item.id + '_all'] ? '<span class="result-badge">✓ cached</span>' : ''}
-    </div>`).join('');
+      ${badge}
+    </div>`;
+  }).join('');
 }
 
 // ─── Load Song ────────────────────────────────────────────────────
