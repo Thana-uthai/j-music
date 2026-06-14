@@ -502,17 +502,33 @@ async function searchLRCLib(q) {
   showSearchStatus('กำลังค้นหา...');
   try {
     // LRCLib ต้องการ q= เสมอ — artist_name อย่างเดียวไม่ทำงาน
+    // หมายเหตุ: API คืนผลสูงสุด 20 รายการ ไม่มี pagination
     const url = `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error();
     let data = await res.json();
 
     if (state.searchMode === 'artist') {
-      // กรองเฉพาะ item ที่ artistName มีคำค้น
-      const qLower = q.toLowerCase();
-      const filtered = data.filter(i => i.artistName && i.artistName.toLowerCase().includes(qLower));
-      // fallback: ถ้า filter แล้วไม่เหลือเลย แสดงทั้งหมด
-      data = filtered.length > 0 ? filtered : data;
+      const qLower = q.toLowerCase().trim();
+      // ให้คะแนนความตรงของชื่อศิลปิน เพื่อดันผลที่ตรงจริงขึ้นบนก่อนถูก slice ทิ้ง
+      //   3 = ตรงเป๊ะ, 2 = ตรงทั้งคำในรายชื่อศิลปิน, 1 = ขึ้นต้นด้วย, 0 = มีคำนี้อยู่
+      const scored = data.map(i => {
+        const a = (i.artistName || '').toLowerCase();
+        // แยกชื่อศิลปินที่มีหลายคน เช่น "Ado, X" / "A feat. B" ออกเป็นคำ ๆ
+        const tokens = a.split(/\s*(?:,|&|\/|feat\.?|ft\.?)\s*/i).map(s => s.trim());
+        let score = -1;
+        if (a === qLower) score = 3;
+        else if (tokens.includes(qLower)) score = 2;
+        else if (a.startsWith(qLower)) score = 1;
+        else if (a.includes(qLower)) score = 0;
+        return { item: i, score };
+      })
+      .filter(x => x.score >= 0)
+      .sort((a, b) => b.score - a.score);
+
+      const matched = scored.map(x => x.item);
+      // fallback: ถ้าไม่มีชื่อศิลปินตรงเลย ใช้ผลทั้งหมด
+      data = matched.length > 0 ? matched : data;
     }
 
     // กรองเฉพาะเพลงญี่ปุ่น (slice หลังกรองเพื่อให้ได้ 15 เพลงจริงๆ)
