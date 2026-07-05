@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>J-Music Learning App</title>
+  <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -179,10 +180,15 @@
 
 <main class="content" id="mainContent">
   <div id="dashboardWidgets">
-    <div id="pinnedSection"></div>
-    <div id="recentSection"></div>
+    <div class="empty-state" id="emptyState">
+      <div class="icon">🎼</div>
+      <h2>เลือกเพลงเพื่อเริ่มเรียน</h2>
+      <p>ค้นหาเพลงภาษาญี่ปุ่นด้านบน<br>ระบบจะแปลและวิเคราะห์คำศัพท์ทุกระดับ N5–N1 ให้อัตโนมัติ</p>
+    </div>
     <div id="apikeySection"></div>
     <div id="nicknameSection"></div>
+    <div id="pinnedSection"></div>
+    <div id="recentSection"></div>
   </div>
   <div id="lyricsView"></div>
 </main>
@@ -199,8 +205,9 @@ const state = {
   currentSong: null,
   searchMode: 'track',
   currentSkips: new Set(),
-  tokenTotals: null, // {opus:{in,out}, sonnet:{in,out}, gemini:{in,out}} ของเพลงปัจจุบัน
-  nickname: localStorage.getItem('user_nickname') || ''
+  lastTokenUsage: null,
+  nickname: localStorage.getItem('user_nickname') || '',
+  tokenizer: null
 };
 
 // ─── Supabase ─────────────────────────────────────────────────────
@@ -257,10 +264,37 @@ async function supaSyncRecentBatch(nickname, songs) {
   } catch(e){}
 }
 
+// ─── Kuromoji ─────────────────────────────────────────────────────
+function initKuromoji() {
+  return new Promise((resolve) => {
+    if (state.tokenizer) { resolve(state.tokenizer); return; }
+    // ใช้ unpkg แทน jsdelivr เพื่อแก้ปัญหา 406
+    kuromoji.builder({ dicPath: 'https://unpkg.com/kuromoji@0.1.2/dict' })
+      .build((err, tokenizer) => {
+        if (err) { console.warn('Kuromoji failed:', err); resolve(null); return; }
+        state.tokenizer = tokenizer;
+        resolve(tokenizer);
+      });
+  });
+}
+function tokenizeLine(tokenizer, line) {
+  if (!tokenizer) return { furigana: [], tokens: [] };
+  const tokens = tokenizer.tokenize(line);
+  const furigana = [];
+  tokens.forEach(t => {
+    if (t.reading && /[一-龯]/.test(t.surface_form)) {
+      const hira = t.reading.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+      furigana.push({ k: t.surface_form, r: hira });
+    }
+  });
+  return { furigana, tokens };
+}
+
 // ─── DOM refs ─────────────────────────────────────────────────────
 const searchInput      = document.getElementById('searchInput');
 const clearBtn         = document.getElementById('clearBtn');
 const searchResults    = document.getElementById('searchResults');
+const emptyState       = document.getElementById('emptyState');
 const apikeySection    = document.getElementById('apikeySection');
 const pinnedSection    = document.getElementById('pinnedSection');
 const recentSection    = document.getElementById('recentSection');
@@ -291,7 +325,6 @@ async function init() {
   document.addEventListener('click', e => { if (!e.target.closest('.app-header')) hideSearchResults(); });
   backBtn.addEventListener('click', resetToDashboard);
   appLogo.addEventListener('click', resetToDashboard);
-
 }
 
 // ─── Navigation ───────────────────────────────────────────────────
@@ -300,6 +333,7 @@ function resetToDashboard() {
   lyricsView.innerHTML = '';
   backBtn.style.display = 'none';
   dashboardWidgets.style.display = 'block';
+  emptyState.style.display = 'flex';
   hideSearchResults();
   searchInput.value = '';
   clearBtn.style.display = 'none';
@@ -487,77 +521,33 @@ function setSearchMode(mode) {
   const q = searchInput.value.trim();
   if (q.length >= 2) searchLRCLib(q);
 }
-// Regex ตรวจอักษรญี่ปุ่น (hiragana / katakana / kanji)
-const JP_RE = /[぀-ヿ一-龯]/;
-
-function isJapaneseSong(item) {
-  // เช็ค trackName ก่อน (เร็วสุด ไม่ต้องอ่าน lyrics ยาว)
-  if (JP_RE.test(item.trackName || '')) return true;
-  // เช็ค lyrics แค่ 200 ตัวแรกพอ
-  const sample = (item.syncedLyrics || item.plainLyrics || '').slice(0, 200);
-  return JP_RE.test(sample);
-}
-
 async function searchLRCLib(q) {
   showSearchStatus('กำลังค้นหา...');
   try {
-    // LRCLib ต้องการ q= เสมอ — artist_name อย่างเดียวไม่ทำงาน
-    // หมายเหตุ: API คืนผลสูงสุด 20 รายการ ไม่มี pagination
-    const url = `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
+    const url = state.searchMode === 'artist'
+      ? `https://lrclib.net/api/search?artist_name=${encodeURIComponent(q)}`
+      : `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error();
-    let data = await res.json();
-
-    if (state.searchMode === 'artist') {
-      const qLower = q.toLowerCase().trim();
-      // ให้คะแนนความตรงของชื่อศิลปิน เพื่อดันผลที่ตรงจริงขึ้นบนก่อนถูก slice ทิ้ง
-      //   3 = ตรงเป๊ะ, 2 = ตรงทั้งคำในรายชื่อศิลปิน, 1 = ขึ้นต้นด้วย, 0 = มีคำนี้อยู่
-      const scored = data.map(i => {
-        const a = (i.artistName || '').toLowerCase();
-        // แยกชื่อศิลปินที่มีหลายคน เช่น "Ado, X" / "A feat. B" ออกเป็นคำ ๆ
-        const tokens = a.split(/\s*(?:,|&|\/|feat\.?|ft\.?)\s*/i).map(s => s.trim());
-        let score = -1;
-        if (a === qLower) score = 3;
-        else if (tokens.includes(qLower)) score = 2;
-        else if (a.startsWith(qLower)) score = 1;
-        else if (a.includes(qLower)) score = 0;
-        return { item: i, score };
-      })
-      .filter(x => x.score >= 0)
-      .sort((a, b) => b.score - a.score);
-
-      const matched = scored.map(x => x.item);
-      // fallback: ถ้าไม่มีชื่อศิลปินตรงเลย ใช้ผลทั้งหมด
-      data = matched.length > 0 ? matched : data;
-    }
-
-    // กรองเฉพาะเพลงญี่ปุ่น (slice หลังกรองเพื่อให้ได้ 15 เพลงจริงๆ)
-    const jpOnly = data.filter(isJapaneseSong);
-    renderSearchResults(jpOnly.slice(0, 15));
+    renderSearchResults((await res.json()).slice(0, 12));
   } catch { showSearchStatus('ค้นหาไม่ได้ ลองใหม่อีกครั้ง'); }
 }
 function showSearchStatus(msg) { searchResults.style.display = 'block'; searchResults.innerHTML = `<div class="search-status">${msg}</div>`; }
 function hideSearchResults() { searchResults.style.display = 'none'; searchResults.innerHTML = ''; }
 function renderSearchResults(items) {
-  if (!items?.length) { showSearchStatus('ไม่พบเพลงญี่ปุ่น ลองค้นหาด้วยชื่อภาษาญี่ปุ่นหรือโรมาจิ'); return; }
+  if (!items?.length) { showSearchStatus('ไม่พบเพลง ลองค้นหาด้วยชื่ออื่น'); return; }
+  const withLyrics = items.filter(i => i.syncedLyrics || i.plainLyrics);
+  if (!withLyrics.length) { showSearchStatus('พบเพลงแต่ไม่มีเนื้อเพลงในฐานข้อมูล'); return; }
   searchResults.style.display = 'block';
-  searchResults.innerHTML = items.map(item => {
-    const hasLyrics = item.syncedLyrics || item.plainLyrics;
-    const badge = state.cache[item.id + '_all']
-      ? '<span class="result-badge">✓ cached</span>'
-      : hasLyrics
-        ? '<span class="result-badge" style="background:rgba(72,187,120,.15);color:var(--N5)">lyrics</span>'
-        : '';
-    return `
+  searchResults.innerHTML = withLyrics.map(item => `
     <div class="search-result-item" onclick="loadSong(${item.id},'${esc(item.trackName)}','${esc(item.artistName)}')">
       <div class="result-icon">🎵</div>
       <div class="result-info">
         <div class="result-title">${esc(item.trackName)}</div>
         <div class="result-artist">${esc(item.artistName)}</div>
       </div>
-      ${badge}
-    </div>`;
-  }).join('');
+      ${state.cache[item.id + '_all'] ? '<span class="result-badge">✓ cached</span>' : ''}
+    </div>`).join('');
 }
 
 // ─── Load Song ────────────────────────────────────────────────────
@@ -573,7 +563,6 @@ async function loadSong(id, title, artist) {
   const cacheKey = `${id}_all`;
   if (state.cache[cacheKey]) {
     const c = state.cache[cacheKey];
-    state.tokenTotals = c.tokenTotals || null;
     renderLyrics(c.lines, c.skips, title, artist, id, true); return;
   }
   showSkeleton(title, artist, id);
@@ -581,7 +570,6 @@ async function loadSong(id, title, artist) {
   if (supaCache) {
     state.cache[cacheKey] = supaCache;
     localStorage.setItem('lyrics_cache', JSON.stringify(state.cache));
-    state.tokenTotals = supaCache.tokenTotals || null;
     renderLyrics(supaCache.lines, supaCache.skips, title, artist, id, true); return;
   }
 
@@ -594,28 +582,18 @@ async function loadSong(id, title, artist) {
     state.currentSkips = skips;
     if (!state.apiKey) { showError('ยังไม่ได้ใส่ API Key'); return; }
 
-    showProcessingBanner(title, 'กำลังหา furigana จากเซิร์ฟเวอร์...');
-    let furiganaByLine;
-    try {
-      furiganaByLine = await tokenizeViaServer(rawLyrics);
-    } catch(e) {
-      console.error('Server tokenize failed:', e);
-      throw new Error('หา furigana ไม่สำเร็จ: ' + e.message);
-    }
-    const tokenizedLines = rawLyrics.map((line, i) => ({
-      text: line,
-      furigana: furiganaByLine[i]?.furigana || []
-    }));
+    showProcessingBanner(title, 'กำลังโหลดคลังคำอ่านคันจิ (Kuromoji)...');
+    const tokenizer = await initKuromoji();
+    const tokenizedLines = rawLyrics.map(line => {
+      const { furigana, tokens } = tokenizeLine(tokenizer, line);
+      return { text: line, furigana, tokens };
+    });
 
     showProcessingBanner(title, 'AI กำลังวิเคราะห์คำศัพท์และไวยากรณ์...');
     const analyzed = await analyzeWithAI(tokenizedLines);
     analyzed.forEach((line, i) => { if (tokenizedLines[i]) line.furigana = tokenizedLines[i].furigana; });
 
-    const cacheData = {
-      lines: analyzed,
-      skips: [...state.currentSkips],
-      tokenTotals: state.tokenTotals // เก็บไว้แสดงใน meta ครั้งต่อไป
-    };
+    const cacheData = { lines: analyzed, skips: [...state.currentSkips] };
     state.cache[cacheKey] = cacheData;
     localStorage.setItem('lyrics_cache', JSON.stringify(state.cache));
     await supaSetCache(id, cacheData);
@@ -623,28 +601,6 @@ async function loadSong(id, title, artist) {
   } catch(err) {
     showError(err.message || 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง');
   }
-}
-
-// ─── Server-side tokenize via Supabase Edge Function ──────────────
-const TOKENIZE_ENDPOINT = `${SUPA_URL}/functions/v1/Tokenize`;
-
-async function tokenizeViaServer(lines) {
-  const res = await fetch(TOKENIZE_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${SUPA_KEY}`,
-      'apikey': SUPA_KEY
-    },
-    body: JSON.stringify({ lines })
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`HTTP ${res.status}: ${errText}`);
-  }
-  const data = await res.json();
-  if (!data.result) throw new Error(data.error || 'no result');
-  return data.result; // [{furigana:[{k,r},...]}, ...]
 }
 
 function extractPlainLyrics(raw) {
@@ -688,18 +644,13 @@ ${lyricsText}
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-8',
       max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }]
     })
   });
   if (!res.ok) { const err = await res.json(); throw new Error(`Opus Error: ${err.error?.message}`); }
   const data = await res.json();
-  // นับ token Opus
-  if (data.usage) {
-    state.tokenTotals.opus.in += data.usage.input_tokens || 0;
-    state.tokenTotals.opus.out += data.usage.output_tokens || 0;
-  }
   const text = data.content[0]?.text || '';
   let clean = text.replace(/```json\n?/g, '').replace(/```/g, '').trim();
   const match = clean.match(/\[[\s\S]*\]/);
@@ -743,14 +694,11 @@ async function callSonnet(prompt) {
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
     },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 16000, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 16000, messages: [{ role: 'user', content: prompt }] })
   });
   if (!res.ok) { const err = await res.json(); throw new Error(`Sonnet Error: ${err.error?.message}`); }
   const data = await res.json();
-  if (data.usage) {
-    state.tokenTotals.sonnet.in += data.usage.input_tokens || 0;
-    state.tokenTotals.sonnet.out += data.usage.output_tokens || 0;
-  }
+  if (data.usage) state.lastTokenUsage = data.usage;
   return data.content[0]?.text || '';
 }
 
@@ -762,11 +710,6 @@ async function callGemini(prompt) {
   );
   if (!res.ok) { const err = await res.json(); throw new Error(`Gemini Error: ${err.error?.message}`); }
   const data = await res.json();
-  // นับ token Gemini
-  if (data.usageMetadata) {
-    state.tokenTotals.gemini.in += data.usageMetadata.promptTokenCount || 0;
-    state.tokenTotals.gemini.out += data.usageMetadata.candidatesTokenCount || 0;
-  }
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
@@ -778,13 +721,6 @@ function parseJSONResponse(text) {
 }
 
 async function analyzeWithAI(tokenizedLines) {
-  // reset token counters ก่อนเริ่ม
-  state.tokenTotals = {
-    opus: { in: 0, out: 0 },
-    sonnet: { in: 0, out: 0 },
-    gemini: { in: 0, out: 0 }
-  };
-
   const allLines = tokenizedLines.map(l => l.text);
   const BATCH = 20;
   const totalBatches = Math.ceil(allLines.length / BATCH);
@@ -930,31 +866,6 @@ function buildJpDisplay(line) {
   }).join('');
 }
 
-function renderTokenChips(totals) {
-  if (!totals) return '';
-  const chips = [];
-  let grandTotal = 0;
-  if (totals.opus && (totals.opus.in || totals.opus.out)) {
-    const sum = totals.opus.in + totals.opus.out;
-    grandTotal += sum;
-    chips.push(`<span class="meta-chip" style="color:#fbbf24">🔢 Opus: ${sum.toLocaleString()}</span>`);
-  }
-  if (totals.sonnet && (totals.sonnet.in || totals.sonnet.out)) {
-    const sum = totals.sonnet.in + totals.sonnet.out;
-    grandTotal += sum;
-    chips.push(`<span class="meta-chip" style="color:#60a5fa">🔢 Sonnet: ${sum.toLocaleString()}</span>`);
-  }
-  if (totals.gemini && (totals.gemini.in || totals.gemini.out)) {
-    const sum = totals.gemini.in + totals.gemini.out;
-    grandTotal += sum;
-    chips.push(`<span class="meta-chip" style="color:#a78bfa">🔢 Gemini: ${sum.toLocaleString()}</span>`);
-  }
-  if (chips.length > 1) {
-    chips.push(`<span class="meta-chip" style="font-weight:600">Σ ${grandTotal.toLocaleString()}</span>`);
-  }
-  return chips.join('');
-}
-
 function renderLyrics(lines, skips, title, artist, id, fromCache) {
   const pinned = isPinned(id);
   lyricsView.innerHTML = `
@@ -971,7 +882,7 @@ function renderLyrics(lines, skips, title, artist, id, fromCache) {
         ${fromCache
           ? '<span class="meta-chip cached">✓ จากคลังแชร์</span>'
           : `<span class="meta-chip">${isGeminiKey(state.apiKey)?'✦ Gemini':'✦ Opus4+Sonnet4'}</span>`}
-        ${renderTokenChips(state.tokenTotals)}
+        ${!fromCache&&state.lastTokenUsage?`<span class="meta-chip">🔢 ${(state.lastTokenUsage.input_tokens+state.lastTokenUsage.output_tokens).toLocaleString()} tokens</span>`:''}
       </div>
     </div>`;
 
@@ -1033,71 +944,6 @@ function esc(str) {
 }
 
 init();
-
-// ─── Swipe Gesture ────────────────────────────────────────────────
-(function() {
-  let touchStartX = 0;
-  let touchStartY = 0;
-  const SWIPE_THRESHOLD = 60;  // px ขั้นต่ำถึงนับว่าปัด
-  const AXIS_LOCK = 30;        // px แกน Y ต้องน้อยกว่านี้ถึงนับแนวนอน
-
-  document.addEventListener('touchstart', e => {
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-  }, { passive: true });
-
-  document.addEventListener('touchend', e => {
-    if (!state.currentSong) return; // ทำงานเฉพาะตอนดูเพลง
-    const dx = e.changedTouches[0].clientX - touchStartX;
-    const dy = e.changedTouches[0].clientY - touchStartY;
-
-    // ต้องเป็นแนวนอนชัดเจน
-    if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dy) > AXIS_LOCK) return;
-
-    if (dx > 0) {
-      // ปัดซ้าย→ขวา: กลับ home
-      resetToDashboard();
-    } else {
-      // ปัดขวา→ซ้าย: เพลงถัดไปใน recent
-      const recents = state.recentSearches;
-      if (recents.length < 2) return;
-      const currentIdx = recents.findIndex(s => s.id === state.currentSong.id);
-      const nextIdx = currentIdx + 1;
-      if (nextIdx >= recents.length) return; // ถึงท้ายแล้ว ไม่ทำอะไร
-      const next = recents[nextIdx];
-      showSwipeHint(next.title, 'next');
-      setTimeout(() => loadSong(next.id, next.title, next.artist), 300);
-    }
-  }, { passive: true });
-
-  function showSwipeHint(title, dir) {
-    const hint = document.createElement('div');
-    hint.style.cssText = `
-      position: fixed;
-      ${dir === 'next' ? 'right: 16px' : 'left: 16px'};
-      top: 50%;
-      transform: translateY(-50%);
-      background: rgba(62,166,255,.15);
-      border: 1px solid rgba(62,166,255,.3);
-      color: var(--accent);
-      padding: 10px 14px;
-      border-radius: 10px;
-      font-size: 12px;
-      max-width: 140px;
-      text-align: center;
-      pointer-events: none;
-      z-index: 999;
-      opacity: 1;
-      transition: opacity .3s;
-      word-break: break-word;
-    `;
-    hint.textContent = dir === 'next' ? '▶ ' + title : '⌂ หน้าแรก';
-    document.body.appendChild(hint);
-    setTimeout(() => { hint.style.opacity = '0'; }, 250);
-    setTimeout(() => hint.remove(), 600);
-  }
-})();
-
 </script>
 </body>
 </html>
